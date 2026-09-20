@@ -2,15 +2,59 @@
 
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { getServer, signAndSubmitTx, getPublicKey } from "./stellar";
-import { CONTRACT_ID, NETWORK_PASSPHRASE } from "./constants";
+import { CONTRACT_ID, NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from "./constants";
+
+// ========== RAW RPC HELPERS ==========
+// The SDK's simulateTransaction() parses the XDR response including custom
+// contract return types.  Contract functions that return structs containing
+// custom enums (e.g. SideState { Safe, Called, Liquidated }) cause the XDR
+// parser to throw "Bad union switch: 4" because the SDK doesn't have the
+// contract's type definitions.  These helpers call the RPC directly, avoiding
+// any XDR parsing of the return value.
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function rawSimulate(txXdr: string): Promise<any> {
+  const res = await fetch(SOROBAN_RPC_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "simulateTransaction",
+      params: { transaction: txXdr },
+    }),
+  });
+  const json = await res.json();
+  if (json.error) {
+    throw new Error(`RPC error: ${JSON.stringify(json.error)}`);
+  }
+  return json.result;
+}
+
+function buildTx(
+  account: StellarSdk.Account,
+  method: string,
+  args: StellarSdk.xdr.ScVal[],
+  fee: string,
+  timeoutSec: number,
+): StellarSdk.Transaction {
+  const contract = new StellarSdk.Contract(CONTRACT_ID);
+  return new StellarSdk.TransactionBuilder(account, {
+    fee,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call(method, ...args))
+    .setTimeout(timeoutSec)
+    .build();
+}
+
+// Dummy account used for read-only / simulate-only calls (no real key needed)
+const DUMMY_SOURCE = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
 async function callView(method: string, ...args: StellarSdk.xdr.ScVal[]): Promise<StellarSdk.xdr.ScVal | null> {
   try {
     const server = getServer();
-    const account = new StellarSdk.Account(
-      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-      "0"
-    );
+    const account = new StellarSdk.Account(DUMMY_SOURCE, "0");
     const contract = new StellarSdk.Contract(CONTRACT_ID);
     const tx = new StellarSdk.TransactionBuilder(account, {
       fee: "100",
@@ -41,28 +85,56 @@ async function callMutate(method: string, ...args: StellarSdk.xdr.ScVal[]): Prom
 
     const server = getServer();
     const account = await server.getAccount(pubkey);
-    const contract = new StellarSdk.Contract(CONTRACT_ID);
+    const tx = buildTx(account, method, args, "10000000", 300);
 
-    const tx = new StellarSdk.TransactionBuilder(account, {
-      fee: "10000000",
-      networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(contract.call(method, ...args))
-      .setTimeout(300)
-      .build();
+    // Use raw RPC to avoid "Bad union switch" XDR parse errors on custom
+    // contract return types (e.g. SideState enum in MarkResult).
+    const rawResult = await rawSimulate(tx.toXDR());
 
-    const simResult = await server.simulateTransaction(tx);
-    if ("error" in simResult) {
-      console.error("Simulation error:", simResult.error);
-      alert(`Transaction simulation failed: ${simResult.error}`);
+    if (rawResult.error) {
+      console.error("Simulation error:", rawResult.error);
+      alert(`Transaction simulation failed: ${rawResult.error}`);
       return false;
     }
 
-    const preparedTx = StellarSdk.rpc.assembleTransaction(
-      tx,
-      simResult as StellarSdk.rpc.Api.SimulateTransactionSuccessResponse
-    ).build();
+    // Manually assemble the transaction, mirroring what the SDK's
+    // assembleTransaction() does but without parsing the return value XDR.
+    const sorobanData = new StellarSdk.SorobanDataBuilder(rawResult.transactionData);
+    const classicFee = parseInt(tx.fee, 10) || 0;
+    const resourceFee = parseInt(rawResult.minResourceFee, 10) || 0;
 
+    const txBuilder = StellarSdk.TransactionBuilder.cloneFrom(tx, {
+      fee: (classicFee + resourceFee).toString(),
+      sorobanData: sorobanData.build(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+    });
+
+    // For invokeHostFunction, rebuild the operation with auth entries
+    // from the simulation (same logic as SDK assembleTransaction).
+    const invokeOp = tx.operations[0] as StellarSdk.Operation.InvokeHostFunction;
+    const authEntries: StellarSdk.xdr.SorobanAuthorizationEntry[] = [];
+    if (rawResult.results && Array.isArray(rawResult.results)) {
+      for (const r of rawResult.results) {
+        if (r.auth && Array.isArray(r.auth)) {
+          for (const a of r.auth) {
+            authEntries.push(
+              StellarSdk.xdr.SorobanAuthorizationEntry.fromXDR(a, "base64")
+            );
+          }
+        }
+      }
+    }
+
+    txBuilder.clearOperations();
+    txBuilder.addOperation(
+      StellarSdk.Operation.invokeHostFunction({
+        source: invokeOp.source,
+        func: invokeOp.func,
+        auth: authEntries.length > 0 ? authEntries : (invokeOp.auth ?? []),
+      })
+    );
+
+    const preparedTx = txBuilder.build();
     const result = await signAndSubmitTx(preparedTx.toXDR());
     if (result?.status === "SUCCESS") {
       alert("Transaction successful!");
@@ -84,33 +156,35 @@ async function callMutate(method: string, ...args: StellarSdk.xdr.ScVal[]): Prom
   }
 }
 
-// Simulate-only: just check if the contract call would succeed, don't parse result
+// Simulate-only: just check if the contract call would succeed, don't parse result.
+// Uses raw fetch to bypass the SDK's XDR parser entirely.
 async function callSimulateCheck(method: string, ...args: StellarSdk.xdr.ScVal[]): Promise<{ ok: boolean; cost?: string; error?: string }> {
   try {
-    const server = getServer();
-    const account = new StellarSdk.Account(
-      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-      "0"
-    );
-    const contract = new StellarSdk.Contract(CONTRACT_ID);
-    const tx = new StellarSdk.TransactionBuilder(account, {
-      fee: "100",
-      networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(contract.call(method, ...args))
-      .setTimeout(30)
-      .build();
+    const account = new StellarSdk.Account(DUMMY_SOURCE, "0");
+    const tx = buildTx(account, method, args, "100", 30);
 
-    const simResult = await server.simulateTransaction(tx);
-    if ("error" in simResult) {
-      return { ok: false, error: String(simResult.error) };
+    const rawResult = await rawSimulate(tx.toXDR());
+
+    if (rawResult.error) {
+      return { ok: false, error: String(rawResult.error) };
     }
-    if ("result" in simResult && simResult.result) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sr = simResult as any;
-      const cost = sr.cost ? `${sr.cost.cpuInsns} CPU, ${sr.cost.memBytes} bytes` : "";
+
+    // If there are results, simulation succeeded
+    if (rawResult.results && rawResult.results.length > 0) {
+      const cost = rawResult.cost
+        ? `${rawResult.cost.cpuInsns} CPU, ${rawResult.cost.memBytes} bytes`
+        : "";
       return { ok: true, cost };
     }
+
+    // transactionData present without error also means success
+    if (rawResult.transactionData) {
+      const cost = rawResult.cost
+        ? `${rawResult.cost.cpuInsns} CPU, ${rawResult.cost.memBytes} bytes`
+        : "";
+      return { ok: true, cost };
+    }
+
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
