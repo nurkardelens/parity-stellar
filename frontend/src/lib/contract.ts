@@ -134,6 +134,39 @@ function toU32(n: number): StellarSdk.xdr.ScVal {
   return StellarSdk.nativeToScVal(n, { type: "u32" });
 }
 
+// Safe parser that handles custom enums without crashing
+function safeParseScVal(scVal: StellarSdk.xdr.ScVal): Record<string, unknown> {
+  try {
+    return StellarSdk.scValToNative(scVal) as Record<string, unknown>;
+  } catch {
+    // Manual parse for structs with custom enums
+    const result: Record<string, unknown> = {};
+    if (scVal.switch().name === "scvMap") {
+      const entries = scVal.map();
+      if (entries) {
+        for (const entry of entries) {
+          const key = entry.key();
+          const val = entry.val();
+          let keyStr: string;
+          try { keyStr = StellarSdk.scValToNative(key) as string; } catch { keyStr = "unknown"; }
+          try { result[keyStr] = StellarSdk.scValToNative(val); } catch {
+            // Enum value — try to read the variant name
+            if (val.switch().name === "scvVec") {
+              const vec = val.vec();
+              if (vec && vec.length > 0) {
+                try { result[keyStr] = StellarSdk.scValToNative(vec[0]); } catch { result[keyStr] = val.switch().name; }
+              }
+            } else {
+              result[keyStr] = val.switch().name;
+            }
+          }
+        }
+      }
+    }
+    return result;
+  }
+}
+
 // ========== VIEW FUNCTIONS (real on-chain reads) ==========
 
 export async function getSpot(): Promise<number | null> {
@@ -253,11 +286,17 @@ export async function markPosition(positionId: number): Promise<any> {
   // No wallet — simulate to show result
   const result = await callSimulateOnly("mark_position", toU64(positionId));
   if (result) {
-    const data = StellarSdk.scValToNative(result);
-    alert(`Mark result (simulated, not submitted):\nValue: ${data.value}\nHedger: ${data.hedger_state}\nMaker: ${data.maker_state}\n\nConnect wallet to execute on-chain.`);
-    return data;
+    try {
+      const data = safeParseScVal(result);
+      alert(`Mark result (simulated, on-chain computed):\nPosition: ${data.position_id ?? positionId}\nValue: ${data.value ?? "computed"}\nHedger: ${data.hedger_state ?? "—"}\nMaker: ${data.maker_state ?? "—"}\n\nConnect wallet to submit on-chain.`);
+      return data;
+    } catch {
+      alert(`Mark simulation successful! Contract responded.\nRaw result available in console.\n\nConnect wallet to submit on-chain.`);
+      console.log("Mark result (raw ScVal):", result);
+      return true;
+    }
   }
-  alert("Simulation failed. Contract may not have active positions.");
+  alert("Simulation failed. Position may not exist or is not active.");
   return false;
 }
 
@@ -272,9 +311,14 @@ export async function liquidate(positionId: number): Promise<any> {
   }
   const result = await callSimulateOnly("liquidate", toU64(positionId));
   if (result) {
-    const data = StellarSdk.scValToNative(result);
-    alert(`Liquidation result (simulated):\nSide: ${data.liquidated_side}\nAmount: ${data.amount_liquidated}\nPartial: ${data.partial}\n\nConnect wallet to execute.`);
-    return data;
+    try {
+      const data = safeParseScVal(result);
+      alert(`Liquidation result (simulated):\n${JSON.stringify(data, null, 2)}\n\nConnect wallet to execute.`);
+      return data;
+    } catch {
+      alert("Liquidation simulation successful! Connect wallet to execute.");
+      return true;
+    }
   }
   alert("Position not liquidatable or simulation failed.");
   return false;
@@ -287,9 +331,14 @@ export async function settle(positionId: number): Promise<any> {
   }
   const result = await callSimulateOnly("settle", toU64(positionId));
   if (result) {
-    const data = StellarSdk.scValToNative(result);
-    alert(`Settlement result (simulated):\nHedger payout: ${data.hedger_payout}\nMaker payout: ${data.maker_payout}\nHaircut: ${data.haircut_applied}\n\nConnect wallet to execute.`);
-    return data;
+    try {
+      const data = safeParseScVal(result);
+      alert(`Settlement result (simulated):\n${JSON.stringify(data, null, 2)}\n\nConnect wallet to execute.`);
+      return data;
+    } catch {
+      alert("Settlement simulation successful! Connect wallet to execute.");
+      return true;
+    }
   }
   alert("Position not ready for settlement or simulation failed.");
   return false;
