@@ -34,7 +34,10 @@ async function callView(method: string, ...args: StellarSdk.xdr.ScVal[]): Promis
 async function callMutate(method: string, ...args: StellarSdk.xdr.ScVal[]): Promise<boolean> {
   try {
     const pubkey = await getPublicKey();
-    if (!pubkey) throw new Error("Wallet not connected");
+    if (!pubkey) {
+      alert("Please connect your Freighter wallet first (top-right button)");
+      return false;
+    }
 
     const server = getServer();
     const account = await server.getAccount(pubkey);
@@ -51,6 +54,7 @@ async function callMutate(method: string, ...args: StellarSdk.xdr.ScVal[]): Prom
     const simResult = await server.simulateTransaction(tx);
     if ("error" in simResult) {
       console.error("Simulation error:", simResult.error);
+      alert(`Transaction simulation failed: ${simResult.error}`);
       return false;
     }
 
@@ -60,10 +64,44 @@ async function callMutate(method: string, ...args: StellarSdk.xdr.ScVal[]): Prom
     ).build();
 
     const result = await signAndSubmitTx(preparedTx.toXDR());
-    return result?.status === "SUCCESS";
+    if (result?.status === "SUCCESS") {
+      return true;
+    }
+    alert("Transaction failed or was rejected");
+    return false;
   } catch (err) {
     console.error(`Mutate call ${method} failed:`, err);
+    alert(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
     return false;
+  }
+}
+
+// Simulate-only call for functions that don't need auth (mark_position, liquidate, settle)
+// Shows the result without requiring a wallet
+async function callSimulateOnly(method: string, ...args: StellarSdk.xdr.ScVal[]): Promise<StellarSdk.xdr.ScVal | null> {
+  try {
+    const server = getServer();
+    const account = new StellarSdk.Account(
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "0"
+    );
+    const contract = new StellarSdk.Contract(CONTRACT_ID);
+    const tx = new StellarSdk.TransactionBuilder(account, {
+      fee: "100",
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call(method, ...args))
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if ("result" in simResult && simResult.result) {
+      return simResult.result.retval;
+    }
+    return null;
+  } catch (err) {
+    console.error(`Simulate call ${method} failed:`, err);
+    return null;
   }
 }
 
@@ -198,20 +236,55 @@ export async function acceptQuote(hedger: string, requestId: number, quoteId: nu
   return callMutate("accept_quote", toAddress(hedger), toU64(requestId), toU64(quoteId));
 }
 
-export async function markPosition(positionId: number): Promise<boolean> {
-  return callMutate("mark_position", toU64(positionId));
+// mark, liquidate, settle don't require specific auth — try wallet first, fall back to simulate
+export async function markPosition(positionId: number): Promise<any> {
+  const pubkey = await getPublicKey();
+  if (pubkey) {
+    return callMutate("mark_position", toU64(positionId));
+  }
+  // No wallet — simulate to show result
+  const result = await callSimulateOnly("mark_position", toU64(positionId));
+  if (result) {
+    const data = StellarSdk.scValToNative(result);
+    alert(`Mark result (simulated, not submitted):\nValue: ${data.value}\nHedger: ${data.hedger_state}\nMaker: ${data.maker_state}\n\nConnect wallet to execute on-chain.`);
+    return data;
+  }
+  alert("Simulation failed. Contract may not have active positions.");
+  return false;
 }
 
 export async function topUpMargin(caller: string, positionId: number, amount: number): Promise<boolean> {
   return callMutate("top_up_margin", toAddress(caller), toU64(positionId), toI128(Math.round(amount * 1e7)));
 }
 
-export async function liquidate(positionId: number): Promise<boolean> {
-  return callMutate("liquidate", toU64(positionId));
+export async function liquidate(positionId: number): Promise<any> {
+  const pubkey = await getPublicKey();
+  if (pubkey) {
+    return callMutate("liquidate", toU64(positionId));
+  }
+  const result = await callSimulateOnly("liquidate", toU64(positionId));
+  if (result) {
+    const data = StellarSdk.scValToNative(result);
+    alert(`Liquidation result (simulated):\nSide: ${data.liquidated_side}\nAmount: ${data.amount_liquidated}\nPartial: ${data.partial}\n\nConnect wallet to execute.`);
+    return data;
+  }
+  alert("Position not liquidatable or simulation failed.");
+  return false;
 }
 
-export async function settle(positionId: number): Promise<boolean> {
-  return callMutate("settle", toU64(positionId));
+export async function settle(positionId: number): Promise<any> {
+  const pubkey = await getPublicKey();
+  if (pubkey) {
+    return callMutate("settle", toU64(positionId));
+  }
+  const result = await callSimulateOnly("settle", toU64(positionId));
+  if (result) {
+    const data = StellarSdk.scValToNative(result);
+    alert(`Settlement result (simulated):\nHedger payout: ${data.hedger_payout}\nMaker payout: ${data.maker_payout}\nHaircut: ${data.haircut_applied}\n\nConnect wallet to execute.`);
+    return data;
+  }
+  alert("Position not ready for settlement or simulation failed.");
+  return false;
 }
 
 // ========== ADMIN FUNCTIONS ==========
