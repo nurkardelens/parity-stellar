@@ -84,9 +84,8 @@ async function callMutate(method: string, ...args: StellarSdk.xdr.ScVal[]): Prom
   }
 }
 
-// Simulate-only call for functions that don't need auth (mark_position, liquidate, settle)
-// Shows the result without requiring a wallet
-async function callSimulateOnly(method: string, ...args: StellarSdk.xdr.ScVal[]): Promise<StellarSdk.xdr.ScVal | null> {
+// Simulate-only: just check if the contract call would succeed, don't parse result
+async function callSimulateCheck(method: string, ...args: StellarSdk.xdr.ScVal[]): Promise<{ ok: boolean; cost?: string; error?: string }> {
   try {
     const server = getServer();
     const account = new StellarSdk.Account(
@@ -103,13 +102,16 @@ async function callSimulateOnly(method: string, ...args: StellarSdk.xdr.ScVal[])
       .build();
 
     const simResult = await server.simulateTransaction(tx);
-    if ("result" in simResult && simResult.result) {
-      return simResult.result.retval;
+    if ("error" in simResult) {
+      return { ok: false, error: String(simResult.error) };
     }
-    return null;
+    if ("result" in simResult && simResult.result) {
+      const cost = simResult.cost ? `${simResult.cost.cpuInsns} CPU, ${simResult.cost.memBytes} bytes` : "";
+      return { ok: true, cost };
+    }
+    return { ok: true };
   } catch (err) {
-    console.error(`Simulate call ${method} failed:`, err);
-    return null;
+    return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
   }
 }
 
@@ -283,20 +285,13 @@ export async function markPosition(positionId: number): Promise<any> {
   if (pubkey) {
     return callMutate("mark_position", toU64(positionId));
   }
-  // No wallet — simulate to show result
-  const result = await callSimulateOnly("mark_position", toU64(positionId));
-  if (result) {
-    try {
-      const data = safeParseScVal(result);
-      alert(`Mark result (simulated, on-chain computed):\nPosition: ${data.position_id ?? positionId}\nValue: ${data.value ?? "computed"}\nHedger: ${data.hedger_state ?? "—"}\nMaker: ${data.maker_state ?? "—"}\n\nConnect wallet to submit on-chain.`);
-      return data;
-    } catch {
-      alert(`Mark simulation successful! Contract responded.\nRaw result available in console.\n\nConnect wallet to submit on-chain.`);
-      console.log("Mark result (raw ScVal):", result);
-      return true;
-    }
+  // No wallet — simulate to check if it would succeed
+  const sim = await callSimulateCheck("mark_position", toU64(positionId));
+  if (sim.ok) {
+    alert(`Mark-to-Market simulation successful!\n\nContract: ${CONTRACT_ID.slice(0,12)}...\nPosition #${positionId} marked on-chain (simulated)\n${sim.cost ? "Cost: " + sim.cost : ""}\n\nConnect Freighter wallet (Testnet) to submit the transaction.`);
+    return true;
   }
-  alert("Simulation failed. Position may not exist or is not active.");
+  alert(`Mark simulation failed: ${sim.error}\n\nPosition may not exist or is already settled.`);
   return false;
 }
 
@@ -309,16 +304,10 @@ export async function liquidate(positionId: number): Promise<any> {
   if (pubkey) {
     return callMutate("liquidate", toU64(positionId));
   }
-  const result = await callSimulateOnly("liquidate", toU64(positionId));
-  if (result) {
-    try {
-      const data = safeParseScVal(result);
-      alert(`Liquidation result (simulated):\n${JSON.stringify(data, null, 2)}\n\nConnect wallet to execute.`);
-      return data;
-    } catch {
-      alert("Liquidation simulation successful! Connect wallet to execute.");
-      return true;
-    }
+  const sim = await callSimulateCheck("liquidate", toU64(positionId));
+  if (sim.ok) {
+    alert(`Liquidation simulation successful!\nPosition #${positionId}\n${sim.cost ? "Cost: " + sim.cost : ""}\n\nConnect wallet to execute.`);
+    return true;
   }
   alert("Position not liquidatable or simulation failed.");
   return false;
@@ -329,16 +318,10 @@ export async function settle(positionId: number): Promise<any> {
   if (pubkey) {
     return callMutate("settle", toU64(positionId));
   }
-  const result = await callSimulateOnly("settle", toU64(positionId));
-  if (result) {
-    try {
-      const data = safeParseScVal(result);
-      alert(`Settlement result (simulated):\n${JSON.stringify(data, null, 2)}\n\nConnect wallet to execute.`);
-      return data;
-    } catch {
-      alert("Settlement simulation successful! Connect wallet to execute.");
-      return true;
-    }
+  const sim = await callSimulateCheck("settle", toU64(positionId));
+  if (sim.ok) {
+    alert(`Settlement simulation successful!\nPosition #${positionId}\n${sim.cost ? "Cost: " + sim.cost : ""}\n\nConnect wallet to execute.`);
+    return true;
   }
   alert("Position not ready for settlement or simulation failed.");
   return false;
