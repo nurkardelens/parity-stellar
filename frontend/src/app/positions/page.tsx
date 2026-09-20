@@ -57,13 +57,13 @@ export default function PositionsPage() {
             notional: Number(pos.notional || 0) / 1e7,
             locked_forward: Number(pos.locked_forward || 0) / 1e7,
             maturity: Number(pos.maturity_time || 0),
-            initial_margin: Number(pos.hedger_margin || 0) / 1e7, // initial at open
+            initial_margin: Math.max(Number(pos.hedger_margin || 0), Number(pos.maker_margin || 0)) / 1e7 || Number(pos.notional || 0) / 1e7 * 0.05,
             hedger_margin: Number(pos.hedger_margin || 0) / 1e7,
             maker_margin: Number(pos.maker_margin || 0) / 1e7,
             hedger_state: parseState(pos.hedger_state),
             maker_state: parseState(pos.maker_state),
-            current_forward: Number(pos.locked_forward || 0) / 1e7, // updated by mark
-            settled: pos.status === "Settled" || pos.status?.Settled !== undefined,
+            current_forward: Number(pos.locked_forward || 0) / 1e7,
+            settled: isSettled(pos),
           });
         }
       } catch {
@@ -77,6 +77,18 @@ export default function PositionsPage() {
   useEffect(() => {
     loadChainPositions();
   }, [loadChainPositions]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function isSettled(pos: any): boolean {
+    const status = pos.status;
+    // String match
+    if (typeof status === "string" && status.toLowerCase().includes("settled")) return true;
+    // Object match
+    if (typeof status === "object" && status && ("Settled" in status || "settled" in status)) return true;
+    // Fallback: both margins 0 = settled
+    if (Number(pos.hedger_margin) === 0 && Number(pos.maker_margin) === 0) return true;
+    return false;
+  }
 
   function parseState(s: unknown): "Safe" | "Called" | "Liquidated" {
     if (!s) return "Safe";
