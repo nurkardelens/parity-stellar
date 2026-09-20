@@ -220,7 +220,7 @@ export default function PositionsPage() {
                 <PositionCard
                   position={pos}
                   userAddress={walletAddress}
-                  showActions={pos.source === "chain"}
+                  showActions={pos.source === "chain" && !pos.settled}
                 />
               </div>
             </div>
