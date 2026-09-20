@@ -1,0 +1,10 @@
+target/
+node_modules/
+.next/
+.env
+.env.local
+*.wasm
+.soroban/
+.stellar/
+frontend/.next/
+frontend/node_modules/
