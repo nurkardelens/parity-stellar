@@ -1,16 +1,19 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Filter,
   AlertTriangle,
   XCircle,
   CheckCircle2,
   BarChart3,
+  Wifi,
+  Loader2,
 } from "lucide-react";
 import PositionCard from "@/components/PositionCard";
 import WaterfallView from "@/components/WaterfallView";
-import { MOCK_POSITIONS } from "@/lib/mock";
+import { MOCK_POSITIONS, type MockPosition } from "@/lib/mock";
+import { getPosition } from "@/lib/contract";
 import { formatUSDC } from "@/lib/format";
 
 type FilterType = "all" | "active" | "called" | "liquidated" | "matured";
@@ -19,8 +22,11 @@ export default function PositionsPage() {
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>("all");
   const [selectedPosition, setSelectedPosition] = useState<number | null>(null);
-
   const [now, setNow] = useState(0);
+
+  // On-chain positions
+  const [chainPositions, setChainPositions] = useState<MockPosition[]>([]);
+  const [chainLoading, setChainLoading] = useState(true);
 
   useEffect(() => {
     setNow(Math.floor(Date.now() / 1000));
@@ -30,20 +36,71 @@ export default function PositionsPage() {
       setNow(Math.floor(Date.now() / 1000));
     };
     check();
-    const interval = setInterval(check, 1000);
+    const interval = setInterval(check, 5000);
     return () => clearInterval(interval);
   }, []);
 
+  // Try to load on-chain positions (IDs 0-9)
+  const loadChainPositions = useCallback(async () => {
+    setChainLoading(true);
+    const loaded: MockPosition[] = [];
+    for (let i = 0; i < 10; i++) {
+      try {
+        const pos = await getPosition(i);
+        if (pos) {
+          loaded.push({
+            id: i,
+            hedger: String(pos.hedger || "").slice(0, 8) + "..." + String(pos.hedger || "").slice(-4),
+            maker: String(pos.maker || "").slice(0, 8) + "..." + String(pos.maker || "").slice(-4),
+            pair: `${pos.pair_quote || "MXN"}/${pos.pair_base || "USD"}`,
+            direction: pos.direction === "SellBase" || pos.direction?.SellBase !== undefined ? "sell" : "buy",
+            notional: Number(pos.notional || 0) / 1e7,
+            locked_forward: Number(pos.locked_forward || 0) / 1e7,
+            maturity: Number(pos.maturity_time || 0),
+            initial_margin: Number(pos.hedger_margin || 0) / 1e7, // initial at open
+            hedger_margin: Number(pos.hedger_margin || 0) / 1e7,
+            maker_margin: Number(pos.maker_margin || 0) / 1e7,
+            hedger_state: parseState(pos.hedger_state),
+            maker_state: parseState(pos.maker_state),
+            current_forward: Number(pos.locked_forward || 0) / 1e7, // updated by mark
+            settled: pos.status === "Settled" || pos.status?.Settled !== undefined,
+          });
+        }
+      } catch {
+        break; // no more positions
+      }
+    }
+    setChainPositions(loaded);
+    setChainLoading(false);
+  }, []);
+
+  useEffect(() => {
+    loadChainPositions();
+  }, [loadChainPositions]);
+
+  function parseState(s: unknown): "Safe" | "Called" | "Liquidated" {
+    if (!s) return "Safe";
+    if (typeof s === "string") return s as "Safe" | "Called" | "Liquidated";
+    if (typeof s === "object") {
+      if ("Called" in (s as object)) return "Called";
+      if ("Liquidated" in (s as object)) return "Liquidated";
+    }
+    return "Safe";
+  }
+
+  // Combine: chain positions first (tagged), then mock (tagged)
+  const allPositions = useMemo(() => {
+    const chain = chainPositions.map(p => ({ ...p, source: "chain" as const }));
+    const mock = MOCK_POSITIONS.map(p => ({ ...p, source: "demo" as const }));
+    return [...chain, ...mock];
+  }, [chainPositions]);
+
   const positions = useMemo(() => {
-    return MOCK_POSITIONS.filter((p) => {
+    if (now === 0) return [];
+    return allPositions.filter((p) => {
       switch (filter) {
         case "active":
-          return (
-            !p.settled &&
-            p.maturity > now &&
-            p.hedger_state === "Safe" &&
-            p.maker_state === "Safe"
-          );
+          return !p.settled && p.maturity > now && p.hedger_state === "Safe" && p.maker_state === "Safe";
         case "called":
           return p.hedger_state === "Called" || p.maker_state === "Called";
         case "liquidated":
@@ -54,44 +111,25 @@ export default function PositionsPage() {
           return true;
       }
     });
-  }, [filter, now]);
+  }, [filter, now, allPositions]);
 
   const stats = useMemo(() => {
     if (now === 0) return { active: 0, called: 0, liquidated: 0, matured: 0, totalNotional: 0 };
-    const active = MOCK_POSITIONS.filter(
-      (p) => !p.settled && p.maturity > now && p.hedger_state === "Safe" && p.maker_state === "Safe"
-    ).length;
-    const called = MOCK_POSITIONS.filter(
-      (p) => p.hedger_state === "Called" || p.maker_state === "Called"
-    ).length;
-    const liquidated = MOCK_POSITIONS.filter(
-      (p) => p.hedger_state === "Liquidated" || p.maker_state === "Liquidated"
-    ).length;
-    const matured = MOCK_POSITIONS.filter(
-      (p) => p.maturity <= now && !p.settled
-    ).length;
-    const totalNotional = MOCK_POSITIONS.filter((p) => !p.settled).reduce(
-      (sum, p) => sum + p.notional,
-      0
-    );
+    const active = allPositions.filter(p => !p.settled && p.maturity > now && p.hedger_state === "Safe" && p.maker_state === "Safe").length;
+    const called = allPositions.filter(p => p.hedger_state === "Called" || p.maker_state === "Called").length;
+    const liquidated = allPositions.filter(p => p.hedger_state === "Liquidated" || p.maker_state === "Liquidated").length;
+    const matured = allPositions.filter(p => now > 0 && p.maturity <= now && !p.settled).length;
+    const totalNotional = allPositions.filter(p => !p.settled).reduce((sum, p) => sum + p.notional, 0);
     return { active, called, liquidated, matured, totalNotional };
-  }, [now]);
+  }, [now, allPositions]);
 
-  // Mock waterfall for selected position
-  const selectedWaterfall =
-    selectedPosition !== null
-      ? {
-          loserMargin: 2941.18,
-          insuranceUsed: 0,
-          winnerHaircut: 0,
-          hedgerPayout: 3200.5,
-          makerPayout: 2681.86,
-        }
-      : null;
+  const selectedWaterfall = selectedPosition !== null
+    ? { loserMargin: 5000, insuranceUsed: 200, winnerHaircut: 0, hedgerPayout: 6485, makerPayout: 3515 }
+    : null;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const FILTERS: { key: FilterType; label: string; count: number; icon: any }[] = [
-    { key: "all", label: "All", count: MOCK_POSITIONS.length, icon: BarChart3 },
+    { key: "all", label: "All", count: allPositions.length, icon: BarChart3 },
     { key: "active", label: "Active", count: stats.active, icon: CheckCircle2 },
     { key: "called", label: "Called", count: stats.called, icon: AlertTriangle },
     { key: "liquidated", label: "Liquidated", count: stats.liquidated, icon: XCircle },
@@ -102,9 +140,17 @@ export default function PositionsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-white">Positions</h1>
-        <div className="text-sm text-gray-500">
-          Total Notional:{" "}
-          <span className="font-mono text-gray-300">{formatUSDC(stats.totalNotional)}</span>
+        <div className="flex items-center gap-4 text-sm text-gray-500">
+          {chainLoading ? (
+            <span className="flex items-center gap-1 text-yellow-400 text-xs">
+              <Loader2 className="w-3 h-3 animate-spin" /> Loading chain...
+            </span>
+          ) : chainPositions.length > 0 ? (
+            <span className="flex items-center gap-1 text-emerald-400 text-xs">
+              <Wifi className="w-3 h-3" /> {chainPositions.length} on-chain
+            </span>
+          ) : null}
+          <span>Notional: <span className="font-mono text-gray-300">{formatUSDC(stats.totalNotional)}</span></span>
         </div>
       </div>
 
@@ -156,28 +202,40 @@ export default function PositionsPage() {
           </div>
         ) : (
           positions.map((pos) => (
-            <div key={pos.id} onClick={() => setSelectedPosition(pos.id)}>
-              <PositionCard
-                position={pos}
-                userAddress={walletAddress}
-                showActions={true}
-              />
+            <div key={`${pos.source}-${pos.id}`}>
+              {/* Source badge */}
+              <div className="flex items-center gap-2 mb-1">
+                <span className={`text-xs px-2 py-0.5 rounded ${
+                  pos.source === "chain"
+                    ? "bg-emerald-900/30 text-emerald-400 border border-emerald-800/50"
+                    : "bg-gray-800 text-gray-500 border border-gray-700"
+                }`}>
+                  {pos.source === "chain" ? "On-Chain" : "Demo Data"}
+                </span>
+                {pos.source === "demo" && (
+                  <span className="text-xs text-gray-600">Buttons simulate only</span>
+                )}
+              </div>
+              <div onClick={() => setSelectedPosition(pos.id)}>
+                <PositionCard
+                  position={pos}
+                  userAddress={walletAddress}
+                  showActions={pos.source === "chain"}
+                />
+              </div>
             </div>
           ))
         )}
       </div>
 
-      {/* Waterfall view for selected position */}
+      {/* Waterfall view */}
       {selectedWaterfall && selectedPosition !== null && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold text-white">
               Settlement Waterfall (Position #{selectedPosition})
             </h2>
-            <button
-              onClick={() => setSelectedPosition(null)}
-              className="text-xs text-gray-500 hover:text-gray-300"
-            >
+            <button onClick={() => setSelectedPosition(null)} className="text-xs text-gray-500 hover:text-gray-300">
               Close
             </button>
           </div>
