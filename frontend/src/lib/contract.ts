@@ -106,7 +106,9 @@ async function callSimulateCheck(method: string, ...args: StellarSdk.xdr.ScVal[]
       return { ok: false, error: String(simResult.error) };
     }
     if ("result" in simResult && simResult.result) {
-      const cost = simResult.cost ? `${simResult.cost.cpuInsns} CPU, ${simResult.cost.memBytes} bytes` : "";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sr = simResult as any;
+      const cost = sr.cost ? `${sr.cost.cpuInsns} CPU, ${sr.cost.memBytes} bytes` : "";
       return { ok: true, cost };
     }
     return { ok: true };
