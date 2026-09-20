@@ -16,7 +16,6 @@ import {
   setRate,
   setTime,
   addEligible,
-  initialize,
   getInsuranceBalance,
 } from "@/lib/contract";
 import { MOCK_SPOT, MOCK_RATES } from "@/lib/mock";
@@ -24,9 +23,10 @@ import { formatUSDC } from "@/lib/format";
 
 interface AdminPanelProps {
   walletConnected: boolean;
+  walletAddress?: string | null;
 }
 
-export default function AdminPanel({ walletConnected }: AdminPanelProps) {
+export default function AdminPanel({ walletConnected, walletAddress }: AdminPanelProps) {
   const [loading, setLoading] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [insuranceBalance, setInsuranceBalance] = useState<number>(50000);
@@ -61,7 +61,7 @@ export default function AdminPanel({ walletConnected }: AdminPanelProps) {
     const key = `spot-${pair}`;
     setLoading(key);
     try {
-      const ok = await setSpotPrice(pair, parseFloat(value));
+      const ok = await setSpotPrice(walletAddress || "", parseFloat(value));
       if (ok) showSuccess(key);
     } finally {
       setLoading(null);
@@ -72,7 +72,7 @@ export default function AdminPanel({ walletConnected }: AdminPanelProps) {
     const key = `rate-${currency}`;
     setLoading(key);
     try {
-      const ok = await setRate(currency, parseFloat(value) / 100);
+      const ok = await setRate(walletAddress || "", currency, parseFloat(value) / 100);
       if (ok) showSuccess(key);
     } finally {
       setLoading(null);
@@ -85,7 +85,7 @@ export default function AdminPanel({ walletConnected }: AdminPanelProps) {
       const ts = demoTime
         ? Math.floor(new Date(demoTime).getTime() / 1000)
         : Math.floor(Date.now() / 1000);
-      const ok = await setTime(ts);
+      const ok = await setTime(walletAddress || "", ts);
       if (ok) showSuccess("time");
     } finally {
       setLoading(null);
@@ -96,7 +96,7 @@ export default function AdminPanel({ walletConnected }: AdminPanelProps) {
     if (!eligibleAddress) return;
     setLoading("eligible");
     try {
-      const ok = await addEligible(eligibleAddress);
+      const ok = await addEligible(walletAddress || "", eligibleAddress);
       if (ok) {
         showSuccess("eligible");
         setEligibleAddress("");
@@ -106,23 +106,13 @@ export default function AdminPanel({ walletConnected }: AdminPanelProps) {
     }
   };
 
-  const handleInitialize = async () => {
-    setLoading("init");
-    try {
-      const ok = await initialize();
-      if (ok) showSuccess("init");
-    } finally {
-      setLoading(null);
-    }
-  };
-
   // Demo scenario: MXN crisis
   const handleMxnCrisis = async () => {
     setLoading("scenario-mxn");
     try {
-      await setSpotPrice("MXN/USD", 0.048);
-      setMxnSpot("0.048");
-      await setRate("MXN", 0.25);
+      await setSpotPrice(walletAddress || "", 19.15);
+      setMxnSpot("19.15");
+      await setRate(walletAddress || "", "MXN", 0.25);
       setMxnRate("25");
       showSuccess("scenario-mxn");
     } finally {
@@ -134,9 +124,9 @@ export default function AdminPanel({ walletConnected }: AdminPanelProps) {
   const handleTryCrash = async () => {
     setLoading("scenario-try");
     try {
-      await setSpotPrice("TRY/USD", 0.018);
-      setTrySpot("0.018");
-      await setRate("TRY", 0.65);
+      await setSpotPrice(walletAddress || "", 38.00);
+      setTrySpot("38.00");
+      await setRate(walletAddress || "", "TRY", 0.65);
       setTryRate("65");
       showSuccess("scenario-try");
     } finally {
@@ -148,7 +138,7 @@ export default function AdminPanel({ walletConnected }: AdminPanelProps) {
   const handleFedHike = async () => {
     setLoading("scenario-fed");
     try {
-      await setRate("USD", 0.075);
+      await setRate(walletAddress || "", "USD", 0.075);
       setUsdRate("7.5");
       showSuccess("scenario-fed");
     } finally {
@@ -160,7 +150,7 @@ export default function AdminPanel({ walletConnected }: AdminPanelProps) {
     setLoading("advance");
     try {
       const ts = Math.floor(Date.now() / 1000) + 86400 * 30;
-      const ok = await setTime(ts);
+      const ok = await setTime(walletAddress || "", ts);
       if (ok) showSuccess("advance");
     } finally {
       setLoading(null);
@@ -189,25 +179,6 @@ export default function AdminPanel({ walletConnected }: AdminPanelProps) {
             {formatUSDC(insuranceBalance)}
           </span>
         </div>
-      </div>
-
-      {/* Initialize */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">
-          Contract
-        </h3>
-        <button
-          onClick={handleInitialize}
-          disabled={loading === "init" || !walletConnected}
-          className={btnClass("init")}
-        >
-          {loading === "init" ? (
-            <Loader2 className="w-3 h-3 animate-spin" />
-          ) : (
-            <Settings className="w-3 h-3" />
-          )}
-          {success === "init" ? "Initialized!" : "Initialize Contract"}
-        </button>
       </div>
 
       {/* Spot Prices */}
@@ -376,7 +347,7 @@ export default function AdminPanel({ walletConnected }: AdminPanelProps) {
           >
             <span className="text-sm font-medium text-white block">MXN Crisis</span>
             <span className="text-xs text-gray-500 mt-0.5 block">
-              Spot to 0.048, rate to 25%
+              Spot to 19.15, rate to 25%
             </span>
             {loading === "scenario-mxn" && <Loader2 className="w-3 h-3 animate-spin mt-1 text-gray-400" />}
           </button>
@@ -387,7 +358,7 @@ export default function AdminPanel({ walletConnected }: AdminPanelProps) {
           >
             <span className="text-sm font-medium text-white block">TRY Crash</span>
             <span className="text-xs text-gray-500 mt-0.5 block">
-              Spot to 0.018, rate to 65%
+              Spot to 38.00, rate to 65%
             </span>
             {loading === "scenario-try" && <Loader2 className="w-3 h-3 animate-spin mt-1 text-gray-400" />}
           </button>

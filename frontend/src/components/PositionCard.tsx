@@ -33,8 +33,8 @@ export default function PositionCard({ position, userAddress, showActions = true
     const interval = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(interval);
   }, []);
-  const isMatured = position.maturity <= now;
-  const timeToMaturity = position.maturity - now;
+  const isMatured = now > 0 && position.maturity <= now;
+  const timeToMaturity = now > 0 ? position.maturity - now : 0;
 
   const mtmPnl =
     position.direction === "buy"
@@ -57,7 +57,7 @@ export default function PositionCard({ position, userAddress, showActions = true
     if (!topUpAmount) return;
     setLoading("topup");
     try {
-      await topUpMargin(position.id, parseFloat(topUpAmount));
+      await topUpMargin("", position.id, parseFloat(topUpAmount));
       setTopUpAmount("");
     } finally {
       setLoading(null);
@@ -120,7 +120,9 @@ export default function PositionCard({ position, userAddress, showActions = true
           </div>
           <div className="flex items-center gap-2 text-xs text-gray-500">
             <Clock className="w-3 h-3" />
-            {isMatured ? (
+            {now === 0 ? (
+              <span className="text-gray-600">...</span>
+            ) : isMatured ? (
               <span className="text-yellow-400">Matured</span>
             ) : (
               formatCountdown(timeToMaturity)
@@ -167,13 +169,13 @@ export default function PositionCard({ position, userAddress, showActions = true
         <MarginBar
           label="Hedger Margin"
           posted={position.hedger_margin}
-          initial={position.notional * position.locked_forward * 0.05}
+          initial={position.initial_margin}
           state={position.hedger_state}
         />
         <MarginBar
           label="Maker Margin"
           posted={position.maker_margin}
-          initial={position.notional * position.locked_forward * 0.05}
+          initial={position.initial_margin}
           state={position.maker_state}
         />
       </div>
@@ -210,21 +212,20 @@ export default function PositionCard({ position, userAddress, showActions = true
               </button>
             )}
 
-            {(position.hedger_state === "Called" || position.maker_state === "Called") && (
-              <>
-                <button
-                  onClick={handleLiquidate}
-                  disabled={loading === "liquidate"}
-                  className="flex items-center gap-1.5 bg-red-600 hover:bg-red-500 text-white text-xs px-3 py-1.5 rounded-md font-medium transition-colors"
-                >
-                  {loading === "liquidate" ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <XCircle className="w-3 h-3" />
-                  )}
-                  Liquidate
-                </button>
-              </>
+            {(position.hedger_state === "Called" || position.maker_state === "Called" ||
+              position.hedger_state === "Liquidated" || position.maker_state === "Liquidated") && (
+              <button
+                onClick={handleLiquidate}
+                disabled={loading === "liquidate"}
+                className="flex items-center gap-1.5 bg-red-600 hover:bg-red-500 text-white text-xs px-3 py-1.5 rounded-md font-medium transition-colors"
+              >
+                {loading === "liquidate" ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <XCircle className="w-3 h-3" />
+                )}
+                Liquidate
+              </button>
             )}
           </div>
 

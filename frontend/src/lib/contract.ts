@@ -69,7 +69,7 @@ async function callMutate(method: string, ...args: StellarSdk.xdr.ScVal[]): Prom
 
 // Helper to create ScVal types
 function toAddress(addr: string): StellarSdk.xdr.ScVal {
-  return StellarSdk.nativeToScVal(StellarSdk.Keypair.fromPublicKey(addr).xdrPublicKey(), { type: "address" });
+  return new StellarSdk.Address(addr).toScVal();
 }
 
 function toSymbol(s: string): StellarSdk.xdr.ScVal {
@@ -88,15 +88,10 @@ function toU32(n: number): StellarSdk.xdr.ScVal {
   return StellarSdk.nativeToScVal(n, { type: "u32" });
 }
 
-// toBool kept for future use
-// function toBool(b: boolean): StellarSdk.xdr.ScVal {
-//   return StellarSdk.nativeToScVal(b, { type: "bool" });
-// }
+// ========== VIEW FUNCTIONS (real on-chain reads) ==========
 
-// ========== VIEW FUNCTIONS ==========
-
-export async function getSpot(pair: string): Promise<number | null> {
-  const result = await callView("get_spot", toSymbol(pair));
+export async function getSpot(): Promise<number | null> {
+  const result = await callView("get_spot");
   if (!result) return null;
   return Number(StellarSdk.scValToNative(result)) / 1e7;
 }
@@ -107,8 +102,19 @@ export async function getRate(currency: string): Promise<number | null> {
   return Number(StellarSdk.scValToNative(result)) / 1e7;
 }
 
-export async function computeForward(pair: string, tenor: number): Promise<number | null> {
-  const result = await callView("compute_forward", toSymbol(pair), toU32(tenor));
+export async function computeForward(
+  spot: number,
+  rateBase: number,
+  rateQuote: number,
+  tenorDays: number
+): Promise<number | null> {
+  const result = await callView(
+    "compute_forward",
+    toI128(Math.round(spot * 1e7)),
+    toI128(Math.round(rateBase * 1e7)),
+    toI128(Math.round(rateQuote * 1e7)),
+    toU32(tenorDays),
+  );
   if (!result) return null;
   return Number(StellarSdk.scValToNative(result)) / 1e7;
 }
@@ -149,47 +155,55 @@ export async function getInsuranceBalance(): Promise<number | null> {
 // ========== MUTATE FUNCTIONS ==========
 
 export async function postRequest(
-  pair: string,
-  direction: "Buy" | "Sell",
+  hedger: string,
+  pairBase: string,
+  pairQuote: string,
+  direction: string,
   notional: number,
-  tenor: number
+  tenorDays: number,
+  marginToken: string,
 ): Promise<boolean> {
   return callMutate(
     "post_request",
-    toSymbol(pair),
-    toSymbol(direction.toLowerCase()),
+    toAddress(hedger),
+    toSymbol(pairBase),
+    toSymbol(pairQuote),
+    StellarSdk.nativeToScVal(direction, { type: "symbol" }),
     toI128(Math.round(notional * 1e7)),
-    toU32(tenor)
+    toU32(tenorDays),
+    toAddress(marginToken),
   );
 }
 
 export async function submitQuote(
+  maker: string,
   requestId: number,
   spreadBps: number,
   expiry: number
 ): Promise<boolean> {
   return callMutate(
     "submit_quote",
+    toAddress(maker),
     toU64(requestId),
-    toU32(spreadBps),
-    toU64(expiry)
+    toI128(spreadBps),
+    toU64(expiry),
   );
 }
 
-export async function cancelQuote(requestId: number, quoteIndex: number): Promise<boolean> {
-  return callMutate("cancel_quote", toU64(requestId), toU32(quoteIndex));
+export async function cancelQuote(maker: string, requestId: number, quoteId: number): Promise<boolean> {
+  return callMutate("cancel_quote", toAddress(maker), toU64(requestId), toU64(quoteId));
 }
 
-export async function acceptQuote(requestId: number, quoteIndex: number): Promise<boolean> {
-  return callMutate("accept_quote", toU64(requestId), toU32(quoteIndex));
+export async function acceptQuote(hedger: string, requestId: number, quoteId: number): Promise<boolean> {
+  return callMutate("accept_quote", toAddress(hedger), toU64(requestId), toU64(quoteId));
 }
 
 export async function markPosition(positionId: number): Promise<boolean> {
   return callMutate("mark_position", toU64(positionId));
 }
 
-export async function topUpMargin(positionId: number, amount: number): Promise<boolean> {
-  return callMutate("top_up_margin", toU64(positionId), toI128(Math.round(amount * 1e7)));
+export async function topUpMargin(caller: string, positionId: number, amount: number): Promise<boolean> {
+  return callMutate("top_up_margin", toAddress(caller), toU64(positionId), toI128(Math.round(amount * 1e7)));
 }
 
 export async function liquidate(positionId: number): Promise<boolean> {
@@ -202,22 +216,18 @@ export async function settle(positionId: number): Promise<boolean> {
 
 // ========== ADMIN FUNCTIONS ==========
 
-export async function setSpotPrice(pair: string, price: number): Promise<boolean> {
-  return callMutate("set_spot_price", toSymbol(pair), toI128(Math.round(price * 1e7)));
+export async function setSpotPrice(admin: string, price: number): Promise<boolean> {
+  return callMutate("set_spot_price", toAddress(admin), toI128(Math.round(price * 1e7)));
 }
 
-export async function setRate(currency: string, rate: number): Promise<boolean> {
-  return callMutate("set_rate", toSymbol(currency), toI128(Math.round(rate * 1e7)));
+export async function setRate(admin: string, currency: string, rate: number): Promise<boolean> {
+  return callMutate("set_rate", toAddress(admin), toSymbol(currency), toI128(Math.round(rate * 1e7)));
 }
 
-export async function setTime(timestamp: number): Promise<boolean> {
-  return callMutate("set_time", toU64(timestamp));
+export async function setTime(admin: string, timestamp: number): Promise<boolean> {
+  return callMutate("set_time", toAddress(admin), toU64(timestamp));
 }
 
-export async function addEligible(address: string): Promise<boolean> {
-  return callMutate("add_eligible", toAddress(address));
-}
-
-export async function initialize(): Promise<boolean> {
-  return callMutate("initialize");
+export async function addEligible(admin: string, account: string): Promise<boolean> {
+  return callMutate("add_eligible", toAddress(admin), toAddress(account));
 }

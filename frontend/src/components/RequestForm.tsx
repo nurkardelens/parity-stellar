@@ -41,7 +41,8 @@ export default function RequestForm({
     setLoading(true);
     setSuccess(false);
     try {
-      const ok = await postRequest(pair, direction, parseFloat(notional), tenor);
+      const [pairBase, pairQuote] = pair.split("/").reverse(); // MXN/USD → base=USD, quote=MXN
+      const ok = await postRequest("", pairBase, pairQuote, direction === "Sell" ? "SellBase" : "BuyBase", parseFloat(notional), tenor, "");
       if (ok) {
         setSuccess(true);
         setTimeout(() => setSuccess(false), 3000);

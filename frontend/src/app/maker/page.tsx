@@ -53,7 +53,7 @@ export default function MakerPage() {
     setLoading(key);
     try {
       const expiryTs = now + parseInt(expiryHours) * 3600;
-      const ok = await submitQuote(requestId, parseInt(spreadBps), expiryTs);
+      const ok = await submitQuote("", requestId, parseInt(spreadBps), expiryTs);
       if (ok) {
         setMyQuotes((prev) => [
           ...prev,
@@ -74,7 +74,7 @@ export default function MakerPage() {
     const key = `cancel-${requestId}-${idx}`;
     setLoading(key);
     try {
-      await cancelQuote(requestId, idx);
+      await cancelQuote("", requestId, idx);
       setMyQuotes((prev) =>
         prev.map((q) =>
           q.requestId === requestId ? { ...q, active: false } : q

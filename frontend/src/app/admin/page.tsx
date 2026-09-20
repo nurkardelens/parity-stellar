@@ -6,11 +6,14 @@ import AdminPanel from "@/components/AdminPanel";
 
 export default function AdminPage() {
   const [walletConnected, setWalletConnected] = useState(false);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
 
   useEffect(() => {
     const check = () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      setWalletConnected(!!(window as any).__parity_wallet);
+      const addr = (window as any).__parity_wallet || null;
+      setWalletConnected(!!addr);
+      setWalletAddress(addr);
     };
     check();
     const interval = setInterval(check, 1000);
@@ -39,7 +42,7 @@ export default function AdminPage() {
       )}
 
       <div className="max-w-2xl">
-        <AdminPanel walletConnected={walletConnected} />
+        <AdminPanel walletConnected={walletConnected} walletAddress={walletAddress} />
       </div>
     </div>
   );

@@ -25,7 +25,7 @@ export default function QuoteList({ requests, walletConnected }: QuoteListProps)
     const key = `${requestId}-${quoteIndex}`;
     setAcceptingId(key);
     try {
-      await acceptQuote(requestId, quoteIndex);
+      await acceptQuote("", requestId, quoteIndex);
     } finally {
       setAcceptingId(null);
     }

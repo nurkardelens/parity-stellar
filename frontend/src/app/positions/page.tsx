@@ -57,6 +57,7 @@ export default function PositionsPage() {
   }, [filter, now]);
 
   const stats = useMemo(() => {
+    if (now === 0) return { active: 0, called: 0, liquidated: 0, matured: 0, totalNotional: 0 };
     const active = MOCK_POSITIONS.filter(
       (p) => !p.settled && p.maturity > now && p.hedger_state === "Safe" && p.maker_state === "Safe"
     ).length;
@@ -70,7 +71,7 @@ export default function PositionsPage() {
       (p) => p.maturity <= now && !p.settled
     ).length;
     const totalNotional = MOCK_POSITIONS.filter((p) => !p.settled).reduce(
-      (sum, p) => sum + p.notional * p.locked_forward,
+      (sum, p) => sum + p.notional,
       0
     );
     return { active, called, liquidated, matured, totalNotional };
