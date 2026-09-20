@@ -18,6 +18,19 @@ export function getServer(): StellarSdk.rpc.Server {
   return _server;
 }
 
+// Raw RPC call to avoid SDK XDR parsing of custom contract types
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function rpcCall(method: string, params: any): Promise<any> {
+  const res = await fetch(SOROBAN_RPC_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  const json = await res.json();
+  if (json.error) throw new Error(JSON.stringify(json.error));
+  return json.result;
+}
+
 export async function connectWallet(): Promise<string | null> {
   try {
     if (typeof window === "undefined") return null;
@@ -63,7 +76,7 @@ export async function getPublicKey(): Promise<string | null> {
 
 export async function signAndSubmitTx(
   txXdr: string
-): Promise<StellarSdk.rpc.Api.GetTransactionResponse | null> {
+): Promise<{ status: string } | null> {
   try {
     console.log("Requesting Freighter signature...");
     const signedResponse = await signTransaction(txXdr, {
@@ -82,35 +95,39 @@ export async function signAndSubmitTx(
       throw new Error("Freighter returned empty signature. Make sure you're on Testnet in Freighter settings.");
     }
 
-    console.log("Submitting signed transaction...");
-    const tx = StellarSdk.TransactionBuilder.fromXDR(
-      signedXdr,
-      NETWORK_PASSPHRASE
-    ) as StellarSdk.Transaction;
+    // Submit via raw RPC to avoid SDK parsing the response XDR
+    console.log("Submitting signed transaction via raw RPC...");
+    const sendResult = await rpcCall("sendTransaction", { transaction: signedXdr });
+    console.log("Send result:", sendResult.status);
 
-    const server = getServer();
-    const sendResponse = await server.sendTransaction(tx);
-    console.log("Send response:", sendResponse.status);
-
-    if (sendResponse.status === "PENDING") {
-      let getResponse: StellarSdk.rpc.Api.GetTransactionResponse;
+    if (sendResult.status === "PENDING" || sendResult.status === "TRY_AGAIN_LATER") {
+      const hash = sendResult.hash;
+      // Poll via raw RPC — avoids SDK's getTransaction parsing custom return types
       let attempts = 0;
-      do {
+      while (attempts < 20) {
         await new Promise((r) => setTimeout(r, 1500));
-        getResponse = await server.getTransaction(sendResponse.hash);
+        const txResult = await rpcCall("getTransaction", { hash });
+        console.log(`Poll attempt ${attempts + 1}: ${txResult.status}`);
+        if (txResult.status === "SUCCESS") {
+          return { status: "SUCCESS" };
+        }
+        if (txResult.status === "FAILED") {
+          return { status: "FAILED" };
+        }
+        // NOT_FOUND = still processing, keep polling
         attempts++;
-      } while (getResponse.status === "NOT_FOUND" && attempts < 20);
-      console.log("Transaction result:", getResponse.status);
-      return getResponse;
+      }
+      throw new Error("Transaction timed out after 30 seconds");
     }
 
-    if (sendResponse.status === "ERROR") {
-      throw new Error(`Transaction send error: ${JSON.stringify(sendResponse.errorResult)}`);
+    if (sendResult.status === "ERROR") {
+      throw new Error(`Send error: ${sendResult.errorResultXdr || "unknown"}`);
     }
 
-    throw new Error(`Unexpected send status: ${sendResponse.status}`);
+    // DUPLICATE or other = might already be processed
+    return { status: sendResult.status || "UNKNOWN" };
   } catch (err) {
     console.error("Transaction failed:", err);
-    throw err; // Re-throw so callMutate can show the specific error
+    throw err;
   }
 }
