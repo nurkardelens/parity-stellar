@@ -65,16 +65,24 @@ export async function signAndSubmitTx(
   txXdr: string
 ): Promise<StellarSdk.rpc.Api.GetTransactionResponse | null> {
   try {
+    console.log("Requesting Freighter signature...");
     const signedResponse = await signTransaction(txXdr, {
       networkPassphrase: NETWORK_PASSPHRASE,
     });
 
     if (signedResponse.error) {
-      console.error("Signing failed:", signedResponse.error);
-      return null;
+      const errMsg = typeof signedResponse.error === "string"
+        ? signedResponse.error
+        : JSON.stringify(signedResponse.error);
+      throw new Error(`Freighter rejected: ${errMsg}`);
     }
 
     const signedXdr = signedResponse.signedTxXdr;
+    if (!signedXdr) {
+      throw new Error("Freighter returned empty signature. Make sure you're on Testnet in Freighter settings.");
+    }
+
+    console.log("Submitting signed transaction...");
     const tx = StellarSdk.TransactionBuilder.fromXDR(
       signedXdr,
       NETWORK_PASSPHRASE
@@ -82,19 +90,27 @@ export async function signAndSubmitTx(
 
     const server = getServer();
     const sendResponse = await server.sendTransaction(tx);
+    console.log("Send response:", sendResponse.status);
 
     if (sendResponse.status === "PENDING") {
       let getResponse: StellarSdk.rpc.Api.GetTransactionResponse;
+      let attempts = 0;
       do {
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 1500));
         getResponse = await server.getTransaction(sendResponse.hash);
-      } while (getResponse.status === "NOT_FOUND");
+        attempts++;
+      } while (getResponse.status === "NOT_FOUND" && attempts < 20);
+      console.log("Transaction result:", getResponse.status);
       return getResponse;
     }
 
-    return null;
+    if (sendResponse.status === "ERROR") {
+      throw new Error(`Transaction send error: ${JSON.stringify(sendResponse.errorResult)}`);
+    }
+
+    throw new Error(`Unexpected send status: ${sendResponse.status}`);
   } catch (err) {
     console.error("Transaction failed:", err);
-    return null;
+    throw err; // Re-throw so callMutate can show the specific error
   }
 }

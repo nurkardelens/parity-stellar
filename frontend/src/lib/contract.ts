@@ -65,13 +65,21 @@ async function callMutate(method: string, ...args: StellarSdk.xdr.ScVal[]): Prom
 
     const result = await signAndSubmitTx(preparedTx.toXDR());
     if (result?.status === "SUCCESS") {
+      alert("Transaction successful!");
       return true;
     }
-    alert("Transaction failed or was rejected");
+    if (result?.status === "FAILED") {
+      alert(`Transaction failed on-chain. Status: ${result.status}`);
+    }
     return false;
   } catch (err) {
     console.error(`Mutate call ${method} failed:`, err);
-    alert(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    if (msg.includes("Freighter rejected")) {
+      alert(`Wallet error: ${msg}\n\nMake sure Freighter is set to TESTNET.`);
+    } else {
+      alert(`Error: ${msg}`);
+    }
     return false;
   }
 }
